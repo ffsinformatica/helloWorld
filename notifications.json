@@ -1,0 +1,28 @@
+{  
+   "notificationRules":[  
+      {  
+         "targets":[              {  
+               "target":"ATN.111.O.1",
+               "notify_on":"ON/OFF"
+            }
+         ],
+         "trigger_kind":"OR/AND",
+         "actions":[  
+            {  
+               "type":"MAIL",
+               "receiver":"user@mail.com",
+               "message":"INTRUSIONE RILEVATA"
+            },
+            {  
+               "type":"SMS",
+               "receiver":"3387654123",
+               "message":"INTRUSIONE RILEVATA"
+            },
+            {  
+               "type":"PUSH",
+               "message":"INTRUSIONE RILEVATA"
+            }
+         ]
+      }
+   ]
+}
