@@ -26,3 +26,6 @@
       }
    ]
 }
+
+
+{"message_type":"MESSAGE_TYPE_TRIGGER_PUSH","payload":{"device_sn":"ZEFJ5QZK","message":"PUSH TEST","serial_number":"ZEFJ5QZK","user_device_id":"XXX"},"session_id":"f081b7a2-f855-4bf8-a6b6-74d49d39de98","timestamp":"gio ago 31 11:11:11 2017"}
