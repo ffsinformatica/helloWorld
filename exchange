@@ -1,959 +1,150 @@
-#include "mod_fieldmap.h"
+#ifndef MOD_FIELDMAP_H
+#define MOD_FIELDMAP_H
 
-#include <QJsonObject>
 
-#include "def_debug_core.h"
-#include "def_objects.h"
-#include "def_commons.h"
-#include "settings.h"
-#include "utilities.h"
+#include <QMap>
+#include <QDebug>
+#include <QFile>
+#include <QJsonArray>
+#include <QTimer>
+
+#include "tag.h"
+#include "../../Interfaces/abstractobjectjsonserialization.h"
+#include "../../Interfaces/abstractpersistence.h"
+#include "../../Interfaces/guipoints.h"
+#include "../../Modules/AbstractModuleBase.h"
+#include "queuebase.h"
 #include "tagcommand.h"
-#include "../mod_flddrvsimulator.h"
-#include "atnhbafielddriver_atena.h"            // Include relativo al driver Atena
-#include "../AtnHbaFieldDriver_Atena/RtObjects/interface/abstractinterface.h"
+#include "../../Interfaces/abstractfielddriver.h"
+#include "fieldcommands.h"
+#include "../AtnHbaFieldDriver_Atena/RtObjects/pdsx/abstractpdsx.h";
 
-//#define CHECK_TIMEOUT_TIMER 5000
-
-#define TIMEOUT_TAG_CONNECTION  30000
-
-/**
- * @brief Mod_FieldMap::Mod_FieldMap
- *
- */
-Mod_FieldMap::Mod_FieldMap()
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-
-    b_AutoCreateMap = true;     // TODO Modificare a false
-    //b_AutoCreateMap = false;     // TODO Modificare a false
-
-    m_TagsField.clear();
-
-    // Sottoscrizione alla coda
-    // Si sottoscrive
-    SingleQueue * queue = SubscribeToQueue(QUEUE_ID_SYSTEM, en_Queue_Message_Definitions[QUEUE_MESSAGE_TYPE_ACTION_TAG].topic);
-    connect(queue, SIGNAL(sgnlNewMessage(QList<QByteArray>)), this, SLOT(slotNewQueueMessage(QList<QByteArray>)));
-
-    // Crea una coda bidirezionale
-    setCanTransmit(true);
-
-    // Istanza timer
-    m_CheckTimer.stop();
-    connect(&m_CheckTimer,SIGNAL(timeout()),this, SLOT(slotCheckTimer()));
-}
+#define XML_DOC_NAME        "FieldMap"
+#define XML_ROOT_NAME       "FieldMap"
+#define XML_ROOT_OBJ        "Objects"
+#define XML_TAG_OBJECT      "Tag"
 
 /**
- * @brief Mod_FieldMap::SearchTag
+ * @brief The Mod_FieldMap class
  *
- *  Ricerca Tag all'interno della lista
  *
- * @return
+ * Classe di gestione
+ *
+ *
  */
-Tag * Mod_FieldMap::SearchTag(QString key)
+class Mod_FieldMap: public AbstractModuleBase, public QueueBase, public GuiPoints
 {
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
 
-    QMap<QString, Tag *>::iterator tagIt = m_TagsField.find(key);
-    if(tagIt != m_TagsField.end()) {
-        return tagIt.value();
-    }
-    else {
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_TAG_NOT_FOUND
-        qDebug() << "Mod_FieldMap::SearchTag. Tag not found.";
-#endif
-        return NULL;
-    }
-}
+    Q_OBJECT
+
+private:
+    QMap<QString, Tag * > m_TagsField;              // Fieldmap con i dati di campo
+    QMap<QString, Tag * > m_TagsSystem;             // Fieldmap con i tag automatici creati dal sistema      (NOT IMPLEMENTED)
+    QTimer m_CheckTimer;
+
+    QList<AbstractFieldDriver *> m_Drivers;     // List of drivers
+
+    bool b_AutoCreateMap;                       // Indica al sistema se deve partire in automatico
+
+    QMap<int, AbstractPdsx *> *m_ListPdsX;
 
 
-/**
- * @brief Mod_FieldMap::ConnectTagSignals
- *
- *
- *
- * @param tag
- */
-void Mod_FieldMap::ConnectTagSignals(Tag *tag)
-{
-    connect(tag,SIGNAL(sgnlValueChanged(Tag*)),this,SLOT(slotTagValueChanged(Tag*)));
-    connect(tag, SIGNAL(sgnlStatusChanged(Tag*)), this, SLOT(slotTagStatusChanged(Tag*)));
-    connect(tag, SIGNAL(sgnlTagCommand(TagCommand)), this, SLOT(slotTagCommand(TagCommand)));
-}
+    void ConnectTagSignals(Tag * tag);
+    Tag *CreateTag(QString key, int mode, int type);
+    Tag *CreateTag(QString key, int mode, int type, QMap<QString, QString> *params, AbstractInterface *ifc, int dir, QString driverstr);
+    Tag *CreateTag(QJsonObject node);
 
-/**
- * @brief CreateTag
- *
- *      Creazione tag
- *
- * @param key
- * @param mode
- * @param type
- */
-Tag * Mod_FieldMap::CreateTag(QString key, int mode, int type)
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
+    void CreateDrivers();
+    void StartDrivers();
+    void StopDrivers();
 
-    QMap<QString, Tag *>::iterator ptrTag = m_TagsField.insert(key, new Tag(key, mode, type));
-    ConnectTagSignals(ptrTag.value());
+    void CheckFolders();
+    bool LoadConfiguration(QJsonObject objCfg);
 
+    void StartCheckTimer();
 
-    return ptrTag.value();
-}
-
-/**
- * @brief Mod_FieldMap::CreateTag
- *
- *  Creazione tag
- *
- * @param key
- * @param mode
- * @param type
- * @param params
- * @return
- */
-Tag * Mod_FieldMap::CreateTag(QString key, int mode, int type, QMap<QString, QString> *params, AbstractInterface *ifc, int dir, QString driverstr)
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-
-    QMap<QString, Tag *>::iterator ptrTag = m_TagsField.insert(key, new Tag(key, mode, type, params, ifc, dir, driverstr));
-    ConnectTagSignals(ptrTag.value());    
-
-    return ptrTag.value();
-}
-
-
-/**
- * @brief Mod_FieldMap::CreateTag
- * @param node
- * @return
- */
-Tag * Mod_FieldMap::CreateTag(QJsonObject node)
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-
-    Tag * tmpTag = new Tag(node);
-    if(tmpTag != NULL)
+public:
+    /**
+     * @brief Instance
+     *
+     * Singleton implementation
+     *
+     * @return
+     */
+    static Mod_FieldMap * &Instance()
     {
-        QMap<QString, Tag *>::iterator ptrTag = m_TagsField.insert(tmpTag->getKey(), tmpTag);
-        ConnectTagSignals(ptrTag.value());
+        static Mod_FieldMap * objFieldMap = NULL;
 
-        return ptrTag.value();
-    }
-    else
-        return NULL;
-}
+        if(objFieldMap == NULL)
+            objFieldMap = new Mod_FieldMap();
 
-
-/**s
- * @brief Mod_FieldMap::
- */
-void Mod_FieldMap::Load()
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-
-    QString filename;
-
-    // Recupero nome file
-    //filename = Utilities::getSpecificFolder(Utilities::DIR_CONFIG_DIR) + "/fieldmap.xml";
-    filename = Utilities::getSpecificFolder(Utilities::DIR_CONFIG_DIR) + "/fieldmap.json";
-
-    // Apre il file
-    if(filename.isNull())
-        return;
-
-    //qDebug() << "Opening file: " << filename;
-
-    // Apre il file
-    QFile *file = new QFile(filename);
-    if(!file->exists()) {
-        qDebug() << "Il file non esiste.";
-        return;
+        return objFieldMap;
     }
 
-    if (!file->open(QIODevice::ReadOnly | QIODevice::Text))
-    {
-        Utilities::Trace() << "Errore apertura file";
-        return;
-    }
-
-
-    QByteArray arr = file->readAll();
-    QJsonParseError jerror;
-    QJsonDocument doc = QJsonDocument::fromJson(arr, &jerror);
-
-    if(jerror.error != QJsonParseError::NoError)
-    {
-        Utilities::Trace() << "Mod_FieldMap _ Error parsing json configuration." << endl;
-        return;
-    }
-
-    QJsonObject obj = doc.object();
-    LoadConfiguration(obj);
-
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_TOTAL_TAG_COUNT
-    qDebug() << "TOTAL REAL TAGS: " << m_TagsField.count();
-#endif
-
-}
-
-/**
- * @brief Mod_FieldMap::Save
- *
- * Save fieldmap on disk
- *
- */
-void Mod_FieldMap::Save()
-{
-
-    QJsonObject root;
-
-    // 1. Ottiene l'oggetto elenco tag
-    QJsonObject obj;
-    obj["elements"] = GetTagListJson();
-    root["FieldMap"] = obj;
-
-    // 2. Ottiene l'oggetto elenco moduli
-    obj["elements"] = GetModuleAndSlotListJson();
-    root["Modules"] = obj;
-
-    // Effettiva scrittura del file
-    QString fullFilePath = QString("%1/%2").arg(Utilities::getSpecificFolder(Utilities::DIR_CONFIG_DIR)).arg("fieldmap.json");
-    QFile wrtFile(fullFilePath);
-    if(wrtFile.open(QIODevice::WriteOnly))
-    {
-        // Sovrascrive
-        QTextStream stream(&wrtFile);
-        QJsonDocument documentTo;
-        documentTo.setObject(root);
-        stream << documentTo.toJson();
-    }
-
-
-//    // *** VERSIONE XML
-//#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-//    DEBUGPRINT_FUNCTION_NOTHIS ;
-//#endif
-
-//    QString filename;
-
-//    // Recupero nome file
-//    filename = Utilities::getSpecificFolder(Utilities::DIR_CONFIG_DIR) + "/fieldmap.xml";
-
-//    //salvo oggetto domotica in formato xml
-//    if( !filename.isNull() )
-//    {
-//        QDomDocument doc (XML_DOC_NAME);
-//        QDomElement rootBase = doc.createElement(XML_ROOT_NAME);
-//        QDomElement rootObj = doc.createElement( XML_ROOT_OBJ );
-
-//        doc.appendChild( rootBase );
-//        rootBase.appendChild(rootObj);
-
-//        // Scorre tutti gli oggetti e li accoda
-//        QMap<QString, Tag*>::const_iterator iTag;
-//        for (iTag = m_TagsField.constBegin(); iTag != m_TagsField.constEnd(); iTag++)
-//        {
-//            (*iTag)->SerializeXml(doc, rootObj);
-//        }
-
-//        QFile file( filename );
-//        if( !file.open( QIODevice::WriteOnly ) )
-//            return;
-
-//        QTextStream ts( &file );
-//        QString filecontent = doc.toString();
-//        ts << filecontent;
-
-//        file.close();
-
-//    }
-}
-
-
-/**
- * @brief Mod_FieldMap::Start
- *
- *
- *
- * @return
- */
-bool Mod_FieldMap::Start()
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-
-    Utilities::Trace() << "Start module FIELDMAP." << endl;
-
-    CreateDrivers();
-
-    if(!b_AutoCreateMap)
-    {
-        // Caricamento file di configurazione
-        Load();
-    }
-
-    StartDrivers();
-    StartCheckTimer();
-
-    return true;
-}
-
-/**
- * @brief Mod_FieldMap::Stop
- *
- *
- *
- * @return
- */
-bool Mod_FieldMap::Stop()
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-#endif
-    StopDrivers();
-
-    return true;
-}
-
-/**
- * @brief Mod_FieldMap::toString
- *
- *
- *
- * @return
- */
-QString Mod_FieldMap::toString()
-{
-    QString ret = "";
-
-    QMap<QString, Tag*>::const_iterator iTag;
-    for (iTag = m_TagsField.constBegin(); iTag != m_TagsField.constEnd(); iTag++)
-    {
-        ret.append((*iTag)->toString());
-        ret.append("\r\n");
-    }
-
-    return ret;
-
-}
-
-
-/**
- * @brief Mod_FieldMap::slotNewTag
- *
- *      // Notifica che deve essere inserita in un nuovo tag (Prevedere di passare tutte le informazioni necessarie a generare un tag
- *
- * @param key
- * @param mode
- * @param type
- * @param params
- */
-void Mod_FieldMap::slotNewTag(QString key, int mode, int type, QMap<QString, QString> params, AbstractInterface* ifc, int dir, QString driverstr)
-{    
-    // Se disabilitato se ne frega e non verifica
-    if(b_AutoCreateMap)
-    {
-        // Aggiunge il tag in automatico
-        //qDebug() << "CREATED NEW TAG. KEY:" << key << "MODE:" << mode << "TYPE:" << type;
-        CreateTag(key, mode,type, &params, ifc, dir, driverstr);
-    }
-
-}
-
-
-/**
- * @brief Mod_FieldMap::slotTagValueChangedFromField
- *
- *          Questo slot viene richiamato dai moduli esterni che devono notificare alla fieldmap il cambiamento dello stato/valore di un tag
- *          // Notifica che il tag ha cambiato valore
- *
- * @param tagId
- * @param value
- */
-void Mod_FieldMap::slotTagValueChangedFromField(QString tagId, float value)
-{
-    // Cerca il tag con il relativo tagId e ne cambia il valore
-
-    // Ricerca tag per inserimento valore
-    Tag * tag = SearchTag(tagId);
-    if(tag != NULL)
-    {
-        // Impostazione valore
-        //qDebug() << "TAG VALUE CHANGED. TAG." << tagId << "VALUE:" << value << ". FOUND";
-        tag->setValue(value);
-    }
-    else
-    {
-        //qDebug() << "TAG VALUE CHANGED. TAG." << tagId << "VALUE:" << value << ". NOT FOUND";
-    }
-}
-
-/**
- * @brief Mod_FieldMap::slotTagValueChanged
- *
- *
- *
- * @param tag
- */
-void Mod_FieldMap::slotTagValueChanged(Tag * tag)
-{
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-    qDebug() << "Mod_FieldMap::slotTagValueChanged." << tag->getKey();
-#endif
-
-    // Invio messaggio
-    QueueMessage * msg = NewMessage(QUEUE_MESSAGE_TYPE_FIELDCHANGE);
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_KEY, tag->getKey());
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_TYPE, QString("%1").arg(tag->getType()));         // Tipo di elemento
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_VALUE, QString("%1").arg(tag->getValue()));       // Valore
-    // Lo stato lo lascio vuoto.
-    Dispatch(msg->getDataForSend());
-}
-
-
-/**
- * @brief Mod_FieldMap::slotTagStatusChanged
- *
- *
- *
- */
-void Mod_FieldMap::slotTagStatusChanged(Tag * tag)
-{    
-#if DBG_FIELDMAP_LEVEL & DBG_FIELDMAP_FNCTS
-    DEBUGPRINT_FUNCTION_NOTHIS ;
-    qDebug() << "Mod_FieldMap::slotTagStatusChanged." << tag->getKey();
-#endif
-
-    // Invio messaggio
-    QueueMessage * msg = NewMessage(QUEUE_MESSAGE_TYPE_FIELDCHANGE);
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_KEY, tag->getKey());
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_TYPE, QString("%1").arg(tag->getType()));
-    // I Leave the value Empty
-    msg->setBodyElements(QueueMessageFieldChange::ELM_TAG_STATE, QString("%1").arg(en_WorkingStates_names[tag->getWorkingState()]));
-
-    Dispatch(msg->getDataForSend());
-}
-
-void Mod_FieldMap::slotSaveMap()
-{
-    //Salvo fieldmap (download rete concluso)
-    Save();
-}
-
-void Mod_FieldMap::slotGestoreOutput(quint16 IdCan, quint8 slot, quint8 numTrigger, quint8 typeTrigger)
-{
-    emit sgnlGestoreOutput(IdCan, slot, numTrigger, typeTrigger);
-}
-
-/**
- * @brief Mod_FieldMap::slotNewQueueMessage
- *
- * In teoria questa procedura dovrebbe ricevere solo i messaggi relativi alle azioni.
- *
- * @param message
- */
-void Mod_FieldMap::slotNewQueueMessage(const QList<QByteArray> &message)
-{
-    // Verifica il tipo di messaggio
-
-    // Sono i messaggi con le azioni.
-    // TODO Vedere come filtrare esclusivamente i messaggi con le azioni
-
-    //qDebug() << "Mod_FieldMap::slotNewQueueMessage. " << message;
-
-    // Inserire i filtri delle azioni
-    // Ricerca il tag destinatario della action per poter preparare il messaggio
-    // La ricerca serve per identificare il driver destinatario
-
-
-    Tag* tag = SearchTag(message.at(QueueMessageActionTag::ELM_TAG_KEY));
-    if(tag != NULL)
-    {
-        // Tag trovato. Invia il comando al tag utilizzando il driver di comunicazione
-        // 1. Identifica il driver del singolo tag
-        // 2. Cerca il driver corr
-
-        // Aggiunge al messaggio l'informazione per il driver di competenza in prima riga.
-        // In questo modo tutti i driver non interessati possono scartare i messaggi.
-        QList<QByteArray> msgToSend;
-        QString driverInfo = QString("driver.%1").arg(tag->getDriverString());
-        msgToSend.insert(0, driverInfo.toUtf8());
-        for(int k = QUEUE_BASE_ELEM_TOPIC; k < message.count(); k++)
-        {
-            msgToSend.append(message.at(k));
-        }
-
-        emit sgnlMessageForDriver(msgToSend);
-
-    }
-
-    // TODO L'accesso alla fieldmap deve essere diretto, come global, per gestire velocemente l'accesso agli I/O
-    // Eventualmente inserire un puntatore al driver all'interno del tag. Se il puntatore è diverso da NULL significa
-    // che il driver è interno, altrimenti significa che o non ha driver (organo) o il driver risiede all'esterno.
-    // In tal caso
-
-}
-
-/**
- * @brief Mod_FieldMap::GetUiPoints
- *
- *
- *
- * @return
- */
-QJsonArray Mod_FieldMap::GetUiPoints()
-{
-    // Restituisce
-    return GetTagListJson();
-}
-
-/**
- * @brief Mod_FieldMap::GetTagListJson
- *
- *
- *
- * @return
- */
-QJsonArray Mod_FieldMap::GetTagListJson()
-{
-    // Scorre l'elenco dei tag
-    QJsonArray elementsTo;      // Contiene gli elementi da passare
-    QMap<QString, Tag *>::const_iterator tagIt = m_TagsField.constBegin();
-    while(tagIt != m_TagsField.end()) {
-
-        Tag * tg = tagIt.value();
-//        QJsonObject objVoice = tg->SerializeJson();
-
-        QJsonObject objVoice;
-        objVoice["key"] = tg->getKey();
-        objVoice["par1"] = QString::number(tg->Interface()->getFather()->getCan(), 16).toUpper();
-        objVoice["par2"] = QString::number(tg->Interface()->getNumero()).rightJustified(3, '0');
-        objVoice["par3"] = QString::number(tg->Interface()->getType()).rightJustified(3, '0');
-        objVoice["driver"] = tg->getDriverString();
-        objVoice["mode"] = tg->getModeString();
-        objVoice["direction"] = tg->getDirString();
-        objVoice["type"] = tg->getTypeString();
-        objVoice["element_type"] = QString("%1").arg(en_Element_Types_Names[TYPE_TAG]);
-        objVoice["enabled"] = "1";
-        objVoice["description"] = tg->Interface()->objectName();
-        elementsTo.append(objVoice);
-        tagIt++;
-    }
-
-    return elementsTo;
-}
-
-QJsonArray Mod_FieldMap::GetModuleAndSlotListJson()
-{
-    QJsonArray elementsTo;
-    QMap<QString, Tag *>::const_iterator tagIt = m_TagsField.constBegin();
-    QMap<quint16, AbstractPdsx *> moduleList;
-    //Lista moduli (univoca) da lista tag (interfacce)
-    while(tagIt != m_TagsField.end()) {
-        Tag * tg = tagIt.value();
-        moduleList.insert(tg->Interface()->getFather()->getCan(), tg->Interface()->getFather());
-        tagIt++;
-    }
-    //Genero Json moduli
-    QMap<quint16, AbstractPdsx *>::const_iterator modIt = moduleList.constBegin();
-    while(modIt != moduleList.end()) {
-        AbstractPdsx* pdsx = modIt.value();
-
-        QJsonObject objVoice;
-        objVoice["can_id"] = QString::number(pdsx->getCan(), 16).toUpper();
-        objVoice["description"] = pdsx->objectName();
-        objVoice["type"] = pdsx->getTipo();
-        objVoice["serial_number"] = pdsx->SerialNumber();
-
-        QJsonArray slotList;
-        for (quint8 nrslot = 0; nrslot < pdsx->listaSlot.length(); nrslot++)
-        {
-            QJsonObject objSlot;
-            objSlot["number"] = nrslot;
-            objSlot["enabled"] = "1";
-            objSlot["type"] = pdsx->listaSlot.at(nrslot)->Funzione();
-            objSlot["description"] = pdsx->listaSlot.at(nrslot)->Descrizione();
-            slotList.append(objSlot);
-        }
-
-        objVoice["slots"] = slotList;
-
-        elementsTo.append(objVoice);
-        modIt++;
-    }
-
-    return elementsTo;
-}
-
-QMap<int, AbstractPdsx *> *Mod_FieldMap::getListPdsx()
-{
-    return m_ListPdsX;
-}
-
-
-/**
- * @brief Mod_FieldMap::getTagValue
- *
- * Get Tag Value
- *
- * @param key
- * @return
- */
-float Mod_FieldMap::getTagValue(QString key)
-{
-    Tag * tag = SearchTag(key);
-    if(tag != NULL)
-    {
-        return tag->getValue();
-    }
-    else
-        return 0;
-}
-
-
-/**
- * @brief Mod_FieldMap::getListInterfaceStates
- *
- * Lista dei tag sottoforma delle interfaces GuiState
- *
- * @return
- */
-QList<GuiState *> * Mod_FieldMap::getListInterfaceStates()
-{
-    QList<GuiState *> * tmpLst = new QList<GuiState *>();
-
-    QMap<QString, Tag *>::const_iterator tagIt = m_TagsField.constBegin();
-    while(tagIt != m_TagsField.end()) {
-        Tag * tg = tagIt.value();
-        tmpLst->append(tg);
-        tagIt++;
-    }
-
-    return tmpLst;
-}
-
-/**
- * @brief Mod_FieldMap::getFieldConnectionState
- *
- * Restituisce lo stato di connessione
- *
- * @return
- */
-int Mod_FieldMap::getFieldConnectionState()
-{
-    return 1;
-}
-
-
-/**
- * @brief CommandDigitalToggle
- * @param tag
- */
-void Mod_FieldMap::CommandDigitalToggle(QString tag)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_DGT_TOGGLE, tag);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandDigitalOn
- * @param tag
- * @param unit
- * @param time
- * @param delay
- */
-void Mod_FieldMap::CommandDigitalOn(QString tag, en_Time_Unit_Types_t unit, int time, int delay)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_DGT_ON, tag, unit, time, delay);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandDigitalOff
- * @param tag
- * @param unit
- * @param time
- * @param delay
- */
-void Mod_FieldMap::CommandDigitalOff(QString tag, en_Time_Unit_Types_t unit, int time, int delay)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_DGT_OFF, tag, unit, time, delay);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandDigitalPwmOn
- * @param tag
- * @param unit
- * @param timeon
- * @param timeoff
- * @param repeat
- * @param delay
- */
-void Mod_FieldMap::CommandDigitalPwmOn(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_DGT_PWM_ON, tag, unit, timeon, timeoff, repeat, delay);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandDigitalPwmOff
- * @param tag
- * @param unit
- * @param timeon
- * @param timeoff
- * @param repeat
- * @param delay
- */
-void Mod_FieldMap::CommandDigitalPwmOff(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_DGT_PWM_OFF, tag, unit,timeon, timeoff, repeat, delay);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandAnalogSet
- * @param tag
- * @param value
- */
-void Mod_FieldMap::CommandAnalogSet(QString tag, float value)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_ANL_SET_ANALOG, tag, value);
-    emit sgnlTagCommand(*cmd);
-}
-
-/**
- * @brief CommandAnalogFromTo
- * @param tag
- * @param valueFrom
- * @param valueTo
- */
-void Mod_FieldMap::CommandAnalogFromTo(QString tag, en_Time_Unit_Types_t unit, int timeon, float valueFrom, float valueTo)
-{
-    TagCommand *cmd= new TagCommand(TAG_COMMAND_ANL_SET_ANALOG_FROM_TO, tag, unit, timeon, valueFrom, valueTo);
-    emit sgnlTagCommand(*cmd);
-}
-
-void Mod_FieldMap::CommandLive()
-{
-    en_Field_Command_Types_t fldcmd = FIELD_COMMAND_LIVE;
-    emit sgnlFieldCommand(fldcmd);
-}
-
-
-/**
- * @brief Mod_FieldMap::slotTagCommand
- *
- * slot comando generato dal tag
- *
- * @param command
- */
-void Mod_FieldMap::slotTagCommand(TagCommand command)
-{
-    emit sgnlTagCommand(command);
-}
-
-/**
- * @brief Mod_FieldMap::CreateDrivers
- *
- *
- *
- */
-void Mod_FieldMap::CreateDrivers()
-{
-    // --> Driver ATENA
-    if(Settings::Instance().getValueBool("Drivers/DriverCanAtena/Enabled"))
-    {
-        // Recupero informazioni sul driver
-        QString comTipo = Settings::Instance().getValue("Drivers/DriverCanAtena/Hardware");
-        int iTipo = -1;
-        QString par1 = "";
-        QString par2 = "";
-        if(comTipo.toUpper() == "TCP")
-        {
-            iTipo = 0;
-            par1 = Settings::Instance().getValue("Drivers/DriverCanAtena/Ip");
-            par2 = Settings::Instance().getValue("Drivers/DriverCanAtena/Port");
-        }
-        else if(comTipo.toUpper() == "CAN")
-        {
-            iTipo = 1;
-        }
-        else if(comTipo.toUpper() == "SPI")
-        {
-            iTipo = 2;
-            par1 = Settings::Instance().getValue("Drivers/DriverCanAtena/SpiDevice");
-        }
-        AtnHbaFieldDriver_Atena *atnDrv = new AtnHbaFieldDriver_Atena(iTipo, par1, par2);
-        m_ListPdsX = atnDrv->getListPdsx();
-
-        // Connessioni ATNHBAFIELDDRIVER_ATENA --> FIELDMAP
-        connect(atnDrv,SIGNAL(sgnlNewTag(QString,int,int,QMap<QString, QString>, AbstractInterface*, int, QString)), this, SLOT(slotNewTag(QString,int,int,QMap<QString, QString>, AbstractInterface*, int, QString)));
-        connect(atnDrv, SIGNAL(sgnlTagValueChanged(QString,float)), this, SLOT(slotTagValueChangedFromField(QString,float)));        // Notifica del cambiamento
-        connect(atnDrv, SIGNAL(sgnlSaveMap()), this, SLOT(slotSaveMap()));  //Download rete finito, salvataggio mappa
-
-
-        // Connessioni FIELDMAP --> FIELD DRIVER ATENA
-        connect(this, SIGNAL(sgnlMessageForDriver(QList<QByteArray>&)), atnDrv, SLOT(slotMessageForDriver(QList<QByteArray>&)));
-        connect(this, SIGNAL(sgnlTagCommand(TagCommand)), atnDrv, SLOT(slotTagCommand(TagCommand)));
-        connect(this, SIGNAL(sgnlFieldCommand(en_Field_Command_Types_t)), atnDrv, SLOT(slotFieldCommand(en_Field_Command_Types_t)));
-        connect(this, SIGNAL(sgnlGestoreOutput(quint16,quint8,quint8,quint8)), atnDrv, SLOT(slotGestoreOutput(quint16,quint8,quint8,quint8)));
-
-        m_Drivers.append(atnDrv);
-    }
-
-    // --> Driver SIMULATORE
-    if(Settings::Instance().getValueBool("Drivers/DriverSim/Enabled"))
-    {
-        Mod_FldDrvSimulator *simDrv = new Mod_FldDrvSimulator();    // Driver di simulazione
-
-        // FIELD DRIVER SIMULATOR --> FIELDMAP
-        connect(simDrv,SIGNAL(sgnlNewTag(QString,int,int,QMap<QString, QString>, AbstractInterface*, int, QString)), this, SLOT(slotNewTag(QString,int,int,QMap<QString, QString>, AbstractInterface*, int, QString)));
-        connect(simDrv, SIGNAL(sgnlTagValueChanged(QString,float)), this, SLOT(slotTagValueChangedFromField(QString,float)));        // Notifica del cambiamento
-
-        // FIELDMAP --> FIELD DRIVER SIMULATOR
-        connect(this, SIGNAL(sgnlMessageForDriver(QList<QByteArray>&)), simDrv, SLOT(slotMessageForDriver(QList<QByteArray>&)));
-        connect(this, SIGNAL(sgnlTagCommand(TagCommand)), simDrv, SLOT(slotTagCommand(TagCommand)));
-        connect(this, SIGNAL(sgnlFieldCommand(en_Field_Command_Types_t)), simDrv, SLOT(slotFieldCommand(en_Field_Command_Types_t)));
-
-        m_Drivers.append(simDrv);
-    }
-}
-
-/**
- * @brief Mod_FieldMap::StartDrivers
- *
- *
- *
- */
-void Mod_FieldMap::StartDrivers()
-{
-    for(int k = 0; k < m_Drivers.count(); k++)
-    {
-        m_Drivers.at(k)->Start();
-    }
-}
-
-/**
- * @brief Mod_FieldMap::StopDrivers
- *
- *
- *
- */
-void Mod_FieldMap::StopDrivers()
-{
-    for(int k = 0; k < m_Drivers.count(); k++)
-    {
-        m_Drivers.at(k)->Stop();
-    }
-}
-
-
-/**
- * @brief Mod_FieldMap::CheckFolders
- *
- *
- *
- */
-void Mod_FieldMap::CheckFolders()
-{
-
-}
-
-
-/**
- * @brief Mod_FieldMap::LoadConfiguration
- *
- *
- *
- * @param objCfg
- * @return
- */
-bool Mod_FieldMap::LoadConfiguration(QJsonObject objCfg)
-{
-    // Recupero dei nodi relativi ai vari Tag
-    if(objCfg.contains("FieldMap"))
-    {
-        QJsonArray nodeList = objCfg["FieldMap"].toObject()["elements"].toArray();
-        // Scorre e crea i singoli oggetti.
-        // Crea n oggetti pds tanti quanti sono elencati nel file xml.
-        for(int k = 0; k < nodeList.count(); k++) {
-            QJsonObject nodo = nodeList.at(k).toObject();    // Prelievo singolo nodo
-            CreateTag(nodo);
-        }
-    }
-
-    return true;
-}
-
-
-/**
- * @brief Mod_FieldMap::Unload
- */
-void Mod_FieldMap::Unload()
-{
-
-}
-
-/**
- * @brief Mod_FieldMap::slotCheckTimer
- *
- * Slot per timeout del timer
- *
- */
-void Mod_FieldMap::slotCheckTimer()
-{
-    m_CheckTimer.stop();
-
-    // Scroll
-    QMap<QString, Tag*>::const_iterator iTag;
-    for (iTag = m_TagsField.constBegin(); iTag != m_TagsField.constEnd(); iTag++)
-    {
-        // Check single ta
-        if((*iTag)->getLastTimeRx().addMSecs(TIMEOUT_TAG_CONNECTION) < QDateTime::currentDateTime())
-        {
-            (*iTag)->setStatus(GENERAL_STATE_DISCONNECTED);
-        }
-    }
-
-    StartCheckTimer();
-}
-
-/**
- * @brief Mod_FieldMap::StartCheckTimer
- *
- *
- *
- */
-void Mod_FieldMap::StartCheckTimer()
-{
-
-    int checkTimeOutTimer = 0;
-
-    // Check of timer timing
-    if(m_TagsField.count() < 20)
-        checkTimeOutTimer = 6000 ;
-    else if (m_TagsField.count() > 19 && m_TagsField.count() < 100)
-        checkTimeOutTimer = 10000;
-    else if (m_TagsField.count() > 99 && m_TagsField.count() < 250)
-        checkTimeOutTimer = 30000 ;
-    else if(m_TagsField.count() > 249 )
-        checkTimeOutTimer = 60000 ;
-
-    m_CheckTimer.setInterval(checkTimeOutTimer);
-    m_CheckTimer.start();
-}
+    explicit Mod_FieldMap();
+
+    QJsonArray GetUiPoints();
+    QJsonArray GetTagListJson();                                       // Recupero lista tag con json
+    QJsonArray GetModuleAndSlotListJson();                             // Recupero lista moduli e relaitivi slot con json
+    QMap<QString, Tag * > * getTags() { return &m_TagsField;}
+    QMap<int, AbstractPdsx *> *getListPdsx();
+
+    Tag * SearchTag(QString key);
+    float getTagValue(QString key);
+
+    void Load();
+    void Unload();
+    void Save();
+
+    /*
+     * Setter/Getter AutoCreateMap
+     */
+    bool getAutoCreateMap();
+    void setAutoCreateMap(bool value);
+
+    /*
+     * Override AbstractWorker
+     */
+    bool Start();
+    bool Stop();
+
+
+    QList<GuiState *> * getListInterfaceStates();
+    int getFieldConnectionState();
+
+    QString toString();
+
+
+    void CommandDigitalToggle(QString tag);                                                                                 // Toggle on-->off/off-->on
+    void CommandDigitalOn(QString tag, en_Time_Unit_Types_t unit, int time, int delay);                                     // On con ritardo
+    void CommandDigitalOff(QString tag, en_Time_Unit_Types_t unit, int time, int delay);                                    // Off con ritardo
+    void CommandDigitalPwmOn(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay);       // Pwm on con delay
+    void CommandDigitalPwmOff(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay);      // Pwm off con delay
+    void CommandAnalogSet(QString tag, float value);                                                                        // Impostazione valore uscita analogica
+    void CommandAnalogFromTo(QString tag, en_Time_Unit_Types_t unit, int timeon, float valueFrom, float valueTo);           // Impostazione rampa uscita analogica
+    void CommandLive();                                                                                                     // Stato in vita SINERGIBOX
+
+public slots:
+    void slotNewTag(QString key, int mode, int type, QMap<QString, QString> params, AbstractInterface *ifc, int dir, QString driverstr);    // Notifica che deve essere inserita in un nuovo tag (Prevedere di passare tutte le informazioni necessarie a generare un tag
+    void slotTagValueChangedFromField(QString tagId, float value);                      // Notifica che il tag ha cambiato valore. Dall'esterno per modificare il valore nella fieldmap
+    void slotTagValueChanged(Tag *);                                                    // Notifica che il tag ha cambiato valore. Dal singolo Tag. Serve alla fieldmap per mandare la segnalazione in giro.
+    void slotTagStatusChanged(Tag *);                                                   // Notifica che il tag ha cambiato stato. Dal singolo Tag. Serve alla fieldmpa per mandare la segnalazione in giro
+    void slotSaveMap();                                                                 // Salvataggio mappa
+    void slotGestoreOutput(quint16 IdCan, quint8 slot, quint8 numTrigger, quint8 typeTrigger);
+
+private slots:
+    void slotNewQueueMessage(const QList<QByteArray>& message);
+    void slotTagCommand(TagCommand command);
+    void slotCheckTimer();
+
+signals:
+    void sgnlMessageForDriver(QList<QByteArray> &message);
+    void sgnlTagCommand(QByteArray command);
+    void sgnlTagCommand(TagCommand command);
+    //RG 15/09/2017 segnale verso field driver per comandi 'al di fuori' dell'astrazione basata sui tag
+    void sgnlFieldCommand(en_Field_Command_Types_t fieldcommand);
+    void sgnlGestoreOutput(quint16 IdCan, quint8 slot, quint8 numTrigger, quint8 typeTrigger);
+
+};
+
+#endif  // MOD_FIELDMAP_H
