@@ -1,229 +1,49 @@
-#include "modulemanager.h"
-
-#include <QJsonObject>
-
-#include "Modules/App_Notifications/mod_notifications.h"
-#include "Modules/App_Scheduler/mod_scheduler.h"
-#include "Modules/App_CanModules/mod_canmodules.h"
-#include "Modules/QueueServer/mod_queueserver.h"
-#include "Modules/fieldmap/mod_fieldmap.h"
-#include "Modules/mod_test.h"
-#include "Modules/App_Automations/mod_appautomations.h"
-#include "Modules/App_Scenery/mod_scenery.h"
-#include "Modules/mod_guiserver.h"
-#include "Modules/App_Clima/mod_appclima.h"
-#include "Modules/webserver/mod_webserver.h"
-#include "Modules/websocket/mod_websocket.h"
-
-#include "Modules/websocket/mod_websocket_client.h"
+#ifndef MODULEMANAGER_H
+#define MODULEMANAGER_H
 
 
-#include "../AtnHbaFieldDriver_Atena/atnhbafielddriver_atena.h"
 
-#include "Modules/mod_flddrvsimulator.h"
-#include "Modules/App_SystemRecorder/mod_appsystemrecorder.h"
-#include "Modules/mod_queuelistener.h"
+//#include "constants.h"
 
-#include "commons.h"
+// Dobbiamo includere gli headers di tutti i moduli utlizzati dal software
+
+#include "Modules/AbstractModuleBase.h"
+#include "Modules/mod_system.h"
 
 
 /**
- * @brief ModuleManager::ModuleManager
+ * @brief The ModuleManager class
  *
+ *  Management of modules
  *
- *
- * @param parent
  */
-ModuleManager::ModuleManager(QObject *parent) :
-    QObject(parent)
+class ModuleManager : public QObject
 {
-    // Inizializzazioni. Reset puntatori APDS.
-    for(int k = 0; k < MODULE_TYPE_MAX; k++)
-    {
-        m_Modules[k] = NULL;
-    }
+    Q_OBJECT
 
-    for(int k = 0; k < MODULE_TYPE_MAX; k++)
-    {
-        m_Options[k] = true;
-    }
-}
+public:
+    explicit ModuleManager(QObject *parent = 0);
 
+    bool Start();
+    bool Stop();
 
-/**
- * @brief ModuleManager::LoadOptionsSettings
- *
- * Loading options enabled or not
- *
- */
-void ModuleManager::LoadOptionsSettings()
-{
-    // Loading options value
-    m_Options[MODULE_TYPE_APP_CLIMA] = Settings::Instance().getValueBool("Options/Climate");
-    m_Options[MODULE_TYPE_APP_ALARM] = Settings::Instance().getValueBool("Options/Alarms");
-    m_Options[MODULE_TYPE_APP_POWER_METER] = Settings::Instance().getValueBool("Options/PowerMeter");
-    m_Options[MODULE_TYPE_QUEUE_LISTENER] = Settings::Instance().getValueBool("Options/QueueListener");
+    AbstractModuleBase * getModule(int module);
 
-}
+    bool isOptionPresent(int moduletype);
 
 
-/**
- * @brief ModuleManager::LoadModules
- *
- * Load of the modules
- *
- */
-void ModuleManager::CreateModules()
-{
-    // TODO Modify inserting
-    // 1. Creation of object
-    // 2. Test if all configuratione and elements needed by single module are ready (example: files and folders, ...)
-    // 3. Interconnection of the modules
-    // 4. Start of the modules
 
-    // 1 --> Creation of objects
+private:
+    AbstractModuleBase * m_Modules[MODULE_TYPE_MAX];    
+    bool m_Options[MODULE_TYPE_MAX];
 
-    // ATTENZIONE. I moduli devono essere inseriti qui nell'ordine in cui serve una correlazione tra di loro
+    void LoadOptionsSettings();
+    void CreateModules();
 
-    Utilities::Trace() << "Start inserting modules..... " << endl;
+signals:
+    
+public slots:
+    
+};
 
-    m_Modules[MODULE_TYPE_QUEUE_SERVER] = new Mod_QueueServer();
-
-    // *** Generation of instance of modules
-    m_Modules[MODULE_TYPE_SYSTEM] = new Mod_System();                                       // Modulo base. Generalmente utilizzato per sincronizzazione e altri utilizzi di utilità comune
-    m_Modules[MODULE_TYPE_FIELD_MAP] = Mod_FieldMap().Instance();                       // Modulo gestione mappa di campo
-    COM_fldmap = dynamic_cast<Mod_FieldMap*> (this->m_Modules[MODULE_TYPE_FIELD_MAP]);  // Assegnazione alla variabile globales
-
-    m_Modules[MODULE_TYPE_AUTOMATIONS] = new Mod_AppAutomations();                         // Modulo gestione automazioni
-    m_Modules[MODULE_TYPE_SCENERY] = new Mod_Scenery();                                 // Modulo gestione scenari
-
-
-    m_Modules[MODULE_TYPE_WEBSOCKET_CLIENT] = new Mod_websocket_client();    // Modulo gestione client websocket (FFS)
-
-
-    m_Modules[MODULE_TYPE_SCHEDULER] = new Mod_scheduler();    // Modulo gestione schedulazioni (FFS)
-    m_Modules[MODULE_TYPE_CANMODULES] = new Mod_canmodules();    // Modulo gestione schedulazioni (FFS)
-    COM_modcan = dynamic_cast<Mod_canmodules*> (this->m_Modules[MODULE_TYPE_CANMODULES]);  // Assegnazione alla variabile globales
-
-    //passo a MODULE_TYPE_NOTIFICATIONS il puntatore ai moduli
-    m_Modules[MODULE_TYPE_NOTIFICATIONS] = new Mod_notifications();    // Modulo gestione notifiche (FFS)
-    ((Mod_notifications *)m_Modules[MODULE_TYPE_NOTIFICATIONS])->setListPdsx(((Mod_FieldMap *)m_Modules[MODULE_TYPE_FIELD_MAP])->getListPdsx());
-
-    //segnale gestore output da modulo CAN a FIELDMAP
-    connect (COM_modcan, SIGNAL(sgnlGestoreOutput(quint16,quint8,quint8,quint8)), COM_fldmap, SLOT(slotGestoreOutput(quint16,quint8,quint8,quint8)));
-
-    // *** Caricamento gestore comunicazione con GUI
-#if (LOAD_MODULE_GUI_SERVER)
-    m_Modules[MODULE_TYPE_GUI_SERVER] = Mod_GuiServer().Instance();                     // Modulo gestione interfacciamento con interfacce grafiche
-#endif
-
-    m_Modules[MODULE_TYPE_TEST] = new Mod_Test();                                       // Modulo utilizzato per test vari. Qui dentro inseriamo i vari test che ci possono servire
-    m_Modules[MODULE_TYPE_APP_SYSTEM_RECORDER] = new Mod_AppSystemRecorder();           // Event log
-
-    // *** Optional Application Modules
-    if(isOptionPresent(MODULE_TYPE_APP_CLIMA))
-        m_Modules[MODULE_TYPE_APP_CLIMA] = new Mod_AppClima();                          // Climate application
-
-
-    if(isOptionPresent(MODULE_TYPE_QUEUE_LISTENER))
-        m_Modules[MODULE_TYPE_QUEUE_LISTENER] = new Mod_QueueListener();
-
-    // 3 --> Interconnection of objects
-    // this->m_Modules[MODULE_TYPE_WEB_SERVER] = new Mod_WebServer();
-   //FFS// this->m_Modules[MODULE_TYPE_WEB_SOCKET] = new Mod_WebSocket();                      // Modulo websocket
-/*
-Utilities::Trace() << "Websocket module created." << endl;
-
-#if(LOAD_MODULE_WEB_SERVER)
-    this->m_Modules[MODULE_TYPE_WEB_SERVER] = new Mod_WebServer();                      // Modulo webserver
-#endif
-
-#if(LOAD_MODULE_WEB_SOCKET)
-
-    this->m_Modules[MODULE_TYPE_WEB_SOCKET] = new Mod_WebSocket();                      // Modulo websocket
-
-Utilities::Trace() << "Websocket module created." << endl;
-#endif
-*/
-}
-
-
-/**
- * @brief ModuleManager::Start
- *
- *      Start modules management system
- *
- */
-bool ModuleManager::Start()
-{
-    Utilities::Trace() << "Start module manager." << endl;
-
-    LoadOptionsSettings();
-
-    CreateModules();
-
-
-    // 4 --> Start modules
-    // Start module - must be synchronous
-    for(int k = 0; k < MODULE_TYPE_MAX; k++)
-    {
-        try
-        {
-            if(m_Modules[k] != NULL)
-            {
-                bool b_ResStart = m_Modules[k]->Start();
-                if(b_ResStart == false)
-                {
-                    // Deve segnalare la mancata esecuzione della funzione
-                    // TODO
-                }
-            }
-        }
-        catch (const std::exception& ex)
-        {
-            qWarning() << Q_FUNC_INFO << "Exception:" << ex.what();
-
-            //emit failure(ex.what());m_CanTransmit
-            //emit finished();
-        }
-    }
-
-    return true;
-
-}
-
-/**
- * @brief ModuleManager::Stop
- *
- *
- *
- * @return
- */
-bool ModuleManager::Stop()
-{
-    return true;
-}
-
-/**
- * @brief ModuleManager::getModule(int module)
- *
- *      Get reference to specified module
- *
- * @param module
- * @return
- */
-AbstractModuleBase * ModuleManager::getModule(int module)
-{    
-    return this->m_Modules[module];
-}
-
-
-/**
- * @brief ModuleManager::isOptionPresent
- * @param moduletype
- * @return
- */
-bool ModuleManager::isOptionPresent(int moduletype)
-{
-   return m_Options[moduletype];
-}
+#endif // MODULEMANAGER_H
