@@ -1,1 +1,173 @@
 
+#include "mod_notifications.h"
+
+
+#include <QApplication>
+#include <stdexcept>
+#include <QCoreApplication>
+#include <QDebug>
+#include <QStringList>
+#include <QTextStream>
+#include <QTimer>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QDateTime>
+#include <QDir>
+#include <QtCore/QDebug>
+#include "def_objects.h"
+#include <QLocale>
+#include "utilities.h"
+#include "Modules/App_Scheduler/mod_scheduler.h"
+
+
+
+Mod_notifications::Mod_notifications()
+{
+}
+Mod_notifications::~Mod_notifications()
+{
+}
+
+void Mod_notifications::startLoadProcedure(){
+    QString fullFilePath = QString("%1/%2").arg(Utilities::getSpecificFolder(Utilities::DIR_SCENARIOS)).arg("notifications.json");
+    qDebug() << "Percorso di caricamento file notifications: " << fullFilePath;
+
+    LoadSingleFile(fullFilePath);
+
+}
+
+/**
+ * @brief Mod_notifications::Init
+ *
+ *      Inizializzazione modulo
+ *
+ */
+void Mod_notifications::Init()
+{
+startLoadProcedure();
+
+//qDebug() << AtnHbaFieldDriver_Atena::m_ListPdsX.count();
+
+}
+void Mod_notifications::LoadSingleFile(QString filename)
+{
+
+    QJsonObject obj = LoadJsonFile(filename);
+
+    if(!obj.isEmpty())
+        LoadConfiguration(obj);
+    else
+        Utilities::Trace() << "Mod_notifications::LoadSingleFile. Configuration file not valid. " << endl;
+}
+
+
+/**
+ * @brief Mod_notifications::Start
+ * @return
+ */
+bool Mod_notifications::Start()
+{
+    Init();
+    return true;
+}
+
+/**
+ * @brief Mod_notifications::Stop
+ * @return
+ */
+bool Mod_notifications::Stop()
+{
+    return true;
+}
+
+
+void Mod_notifications::processGUIrequest()
+{
+
+}
+
+void Mod_notifications::parseNotifications()
+{
+
+
+
+
+    }
+
+
+bool Mod_notifications::LoadConfiguration(QJsonObject objCfg)
+{
+
+    QJsonArray nodeList = objCfg["notificationRules"].toArray();
+    triggers.clear();
+
+
+    for(int k = 0; k < nodeList.count(); k++) {
+       notificationTrigger*   myTrigger = new notificationTrigger();
+
+        QJsonObject nodo = nodeList.at(k).toObject();    // Prelievo singolo nodo
+
+        myTrigger->triggerKind = nodo["trigger_kind"].toString();
+
+        QJsonArray targets = nodo["targets"].toArray();
+        for(int j = 0; j < targets.count(); j++) {
+           notification_target* dummyTargetBlock = new notification_target();
+
+            QJsonObject block = targets.at(j).toObject();
+            dummyTargetBlock->target=block["target"].toString();
+            dummyTargetBlock->notifyOn=block["notify_on"].toString();
+            myTrigger->targets.append(dummyTargetBlock);
+
+        }
+
+        QJsonArray actions = nodo["actions"].toArray();
+
+        for(int j = 0; j < actions.count(); j++) {
+           notification_action* dummyActionBlock = new notification_action();
+
+            QJsonObject block = actions.at(j).toObject();
+            dummyActionBlock->type=block["type"].toString();
+            dummyActionBlock->receiver=block["receiver"].toString();
+            dummyActionBlock->message=block["message"].toString();
+            myTrigger->actions.append(dummyActionBlock);
+
+        }
+
+
+            triggers.append(myTrigger);
+
+
+        }
+ Utilities::Trace() << "\n====================\nLOADING NOTIFICATIONS TRIGGERS:\n";
+    for ( int jj=0;jj< triggers.size();jj++){
+    Utilities::Trace() << "just DECLARED _ TRIGGER KIND:"<< triggers.at(jj)->triggerKind<< "\n";
+
+    for ( int kk=0;kk< triggers.at(jj)->targets.size();kk++){
+        Utilities::Trace() << "\tTARGET:"<< triggers.at(jj)->targets.at(kk)->target   << " NOTIFY ON "<<triggers.at(jj)->targets.at(kk)->notifyOn << "\n";
+
+
+    }
+    Utilities::Trace() << "\tACTIONS :\n";
+    for ( int kk=0;kk< triggers.at(jj)->actions.size();kk++){
+        Utilities::Trace() << "\t\tTYPE:"<< triggers.at(jj)->actions.at(kk)->type   << "\n";
+        Utilities::Trace() << "\t\tRECEIVER:"<< triggers.at(jj)->actions.at(kk)->receiver   << "\n";
+        Utilities::Trace() << "\t\tMESSAGE:"<< triggers.at(jj)->actions.at(kk)->message   << "\n";
+
+
+
+    }
+
+    }
+
+ Utilities::Trace() << "\n====================\nEND NOTIFICATIONS TRIGGERS:\n";
+
+    return true;
+
+}
+
+void Mod_notifications::setListPdsx(QMap<int, AbstractPdsx *> *pdslist)
+{
+    m_ListPdsX = pdslist;
+}
+
