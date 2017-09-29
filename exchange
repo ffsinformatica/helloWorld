@@ -1,150 +1,815 @@
-#ifndef MOD_FIELDMAP_H
-#define MOD_FIELDMAP_H
+#include "atnhbafielddriver_atena.h"
 
+//#include "../commons/commons.h"
+#include "../AtnHbaCoreCommons/tagcommands.h"
 
-#include <QMap>
-#include <QDebug>
-#include <QFile>
-#include <QJsonArray>
-#include <QTimer>
-
-#include "tag.h"
-#include "../../Interfaces/abstractobjectjsonserialization.h"
-#include "../../Interfaces/abstractpersistence.h"
-#include "../../Interfaces/guipoints.h"
-#include "../../Modules/AbstractModuleBase.h"
-#include "queuebase.h"
-#include "tagcommand.h"
-#include "../../Interfaces/abstractfielddriver.h"
-#include "fieldcommands.h"
-#include "../AtnHbaFieldDriver_Atena/RtObjects/pdsx/abstractpdsx.h";
-
-#define XML_DOC_NAME        "FieldMap"
-#define XML_ROOT_NAME       "FieldMap"
-#define XML_ROOT_OBJ        "Objects"
-#define XML_TAG_OBJECT      "Tag"
 
 /**
- * @brief The Mod_FieldMap class
+ * @brief The en_commandstring_positions enum
  *
+ * Posizione dei comandi e parametri all'interno della stringa dei comandi
  *
- * Classe di gestione
+ */
+enum en_commandstring_positions
+{
+    CMD_POSITION_COMMAND = 3,
+    CMD_POSITION_PAR1 = 4,
+    CMD_POSITION_PAR2 = 5,
+    CMD_POSITION_PAR3 = 6,
+    CMD_POSITION_PAR4 = 7,
+    CMD_POSITION_PAR5 = 8
+};
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::AtnHbaFieldDriver_Atena
+ *
  *
  *
  */
-class Mod_FieldMap: public AbstractModuleBase, public QueueBase, public GuiPoints
+AtnHbaFieldDriver_Atena::AtnHbaFieldDriver_Atena():
+    AbstractModuleBase (NULL),
+    m_CommCan(NULL),
+    m_CommTcp(NULL),
+    m_Comm(NULL),
+    m_CanSoftLux(NULL),
+    m_CommSpi(NULL)
 {
+    // Oggetto protocollo
+    m_CanSoftLux = new CanSoftLux();
 
-    Q_OBJECT
+    m_CommType = COMM_TYPE_TCP;         // Default via tcp/ip
 
-private:
-    QMap<QString, Tag * > m_TagsField;              // Fieldmap con i dati di campo
-    QMap<QString, Tag * > m_TagsSystem;             // Fieldmap con i tag automatici creati dal sistema      (NOT IMPLEMENTED)
-    QTimer m_CheckTimer;
-
-    QList<AbstractFieldDriver *> m_Drivers;     // List of drivers
-
-    bool b_AutoCreateMap;                       // Indica al sistema se deve partire in automatico
-
-    QMap<int, AbstractPdsx *> *m_ListPdsX;
+    // Questo costruttore non fa partire niente
+    // In linea teorica
+    m_ConfigCommand = new ConfigCommand(m_CanSoftLux);
+    connect (m_ConfigCommand, SIGNAL(sgnlConfigCompleted()), this, SLOT(slotConfigCompleted()));
+}
 
 
-    void ConnectTagSignals(Tag * tag);
-    Tag *CreateTag(QString key, int mode, int type);
-    Tag *CreateTag(QString key, int mode, int type, QMap<QString, QString> *params, AbstractInterface *ifc, int dir, QString driverstr);
-    Tag *CreateTag(QJsonObject node);
+/**
+ * @brief AtnHbaFieldDriver_Atena::AtnHbaFieldDriver_Atena
+ *
+ *
+ *
+ * @param commType
+ */
+AtnHbaFieldDriver_Atena::AtnHbaFieldDriver_Atena(int commType, QString par1, QString par2):
+    AbstractModuleBase (NULL),
+    m_CommCan(NULL),
+    m_CommTcp(NULL),
+    m_CommSpi(NULL),
+    m_Comm(NULL)
+{
+    // Oggetto protocollo
+    m_CanSoftLux = new CanSoftLux();
 
-    void CreateDrivers();
-    void StartDrivers();
-    void StopDrivers();
+    m_ConfigCommand = new ConfigCommand(m_CanSoftLux);
+    connect (m_ConfigCommand, SIGNAL(sgnlConfigCompleted()), this, SLOT(slotConfigCompleted()));
 
-    void CheckFolders();
-    bool LoadConfiguration(QJsonObject objCfg);
+    setCommunicationType(commType, par1, par2);
+}
 
-    void StartCheckTimer();
+/**
+ * @brief AtnHbaFieldDriver_Atena::LinkModules
+ *
+ *      Collega il modulo di comunicazione CAN con il modulo del protocollo CANSOFTLUX
+ *
+ */
+void AtnHbaFieldDriver_Atena::LinkModules()
+{
+   //TODO: Per non spedire nessun messaggio CAN commentare la seguente riga
+    connect (m_CanSoftLux, SIGNAL(sgnlSend(QHostAddress&, quint32, quint8*)), m_Comm, SLOT(slotNeedSend(QHostAddress&,quint32,quint8*)));
+    connect (m_CanSoftLux, SIGNAL(sgnlSend(quint32,quint8*)), m_Comm, SLOT(slotNeedSend(quint32,quint8*)));
 
-public:
-    /**
-     * @brief Instance
-     *
-     * Singleton implementation
-     *
-     * @return
-     */
-    static Mod_FieldMap * &Instance()
-    {
-        static Mod_FieldMap * objFieldMap = NULL;
+    // m_cansoftlux --> this
+    connect ( m_CanSoftLux,SIGNAL(sgnlLog(QString)),this,SLOT(slotLog(QString)));
 
-        if(objFieldMap == NULL)
-            objFieldMap = new Mod_FieldMap();
+    // m_Comm --> m_CanSoftLux
+    // Per non ricevere nessun messaggio CAN commentare la seguente riga
+    connect (m_Comm, SIGNAL(sgnlRxData(QHostAddress &, quint32, quint8 *)), m_CanSoftLux, SLOT(slotReceive(QHostAddress &, quint32, quint8 *)));
 
-        return objFieldMap;
+
+    // m_CanSoftLux --> m_Pds (connessione ai segnali che devono essere interpretati singolarmente e che servono da passare alla fieldmap)
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxEventoInput(Address&,int)), this, SLOT(slotRxFromCanSingleInput(Address&,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxEventoSabotaggio(Address&,int)), this, SLOT(slotRxFromCanSingleSabotaggio(Address&,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxMultiDigitalInput(Address&,int)), this, SLOT(slotRxFromCanMultiDigitalInput(Address&,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxMultiDigitalSabotaggio(Address&,int)), this, SLOT(slotRxFromCanMultiDigitalSabotaggio(Address&,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxMultiAnalogInput(Address&,int,int)), this, SLOT(slotRxFromCanMultiAnalogInput(Address&,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxEventoOutput(Address&,int,int)),this, SLOT(slotRxFromCanEventoOutput(Address&,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxMultiOutput(Address&,int,int)),this, SLOT(slotRxFromCanMultiOutput(Address&,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescr(Address&,QString&)),this, SLOT(slotRxFromCanCfgDescr(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescrInput(Address&,QString&)), this, SLOT(slotRxFromCanCfgDescrInput(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescrOutput(Address&,QString&)), this, SLOT(slotRxFromCanCfgDescrOutput(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxSerialnumber(Address&, QString&)), this, SLOT(slotRxFromCanSerialnumber(Address&, QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDigitalOutputNome(Address&,quint8,quint8,QString)), this, SLOT(slotRxFromCanCfgDigitalOutputNome(Address&,quint8,quint8,QString)));
+
+    connect (m_CanSoftLux, SIGNAL(sgnlDownloadRete()), this, SLOT(slotDownloadRete()));
+
+    /* cansoftlux --> ConfigCommand */
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxIdMsg(Address &, int, int, int, int, bool, bool, bool)),m_ConfigCommand, SLOT(slotRxFromCanId(Address&,int,int,int,int, bool, bool, bool)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxId2Msg(Address&,int,int,bool,int,int,int)),m_ConfigCommand, SLOT(slotRxFromCanId2(Address&,int,int,bool,int,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescr(Address&,QString&)),m_ConfigCommand, SLOT(slotRxFromCanCfgDescr(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescrInput(Address&,QString&)),m_ConfigCommand, SLOT(slotRxFromCanCfgDescrInput(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgInputAnalog(Address&,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgInputAnalog(Address&,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDescrOutput(Address&,QString&)),m_ConfigCommand, SLOT(slotRxFromCanCfgDescrOutput(Address&,QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutput(Address&,int,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutput(Address&,int,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutput(Address&,int,int,int,int,int,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutput(Address&,int,int,int,int,int,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutput(Address&,int,int,quint16,int,quint16,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutput(Address&,int,int,quint16,int,quint16,int)));
+
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutputMulti1(Address&,int,int,int,int,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutputMulti1(Address&,int,int,int,int,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutputMulti2(Address&,int,int,int,int,int,int,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutputMulti2(Address&,int,int,int,int,int,int,int,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreDigitalOutputMulti3(Address&,int,int,int,int,int,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreDigitalOutputMulti3(Address&,int,int,int,int,int,int)));
+
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreAnalogOutput1(Address&,int, int,int,float,float)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreAnalogOutput1(Address&,int,int, int,float,float)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreAnalogOutput2(Address&,int,int, bool, quint16,int,quint16,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreAnalogOutput2(Address&,int,int,bool, quint16,int,quint16,int)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgGestoreAnalogOutput3(Address&,int,int,float,float,int)), m_ConfigCommand, SLOT(slotRxFromCanCfgGestoreAnalogOutput3(Address&,int,int,float,float,int)));
+
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxSerialnumber(Address&, QString&)), m_ConfigCommand, SLOT(slotRxFromCanSerialnumber(Address&, QString&)));
+    connect (m_CanSoftLux, SIGNAL(sgnlCanRxCfgDigitalOutputNome(Address&,quint8,quint8,QString)), m_ConfigCommand, SLOT(slotRxFromCanCfgDigitalOutputNome(Address&,quint8,quint8,QString)));
+
+    // ActiveSignalSlotGeneric
+    connect (this, SIGNAL(sgnlSendDigitalOutput(Address&,AbstractMessageEvent&)), m_CanSoftLux, SLOT(slotSendDigitalOutput(Address&,AbstractMessageEvent&)));
+    connect (this, SIGNAL(sgnlSendLiveCommand()) , m_CanSoftLux, SLOT(slotSendLive()));
+
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::slotLog
+ *
+ *
+ *
+ * @param str
+ */
+void AtnHbaFieldDriver_Atena::slotLog(QString str)
+{
+    //qDebug() << "LOG:" << str;
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::CreateTagDriverParameters
+ *
+ *
+ *
+ */
+void AtnHbaFieldDriver_Atena::CreateTagDriverParameters(Tag * tag, AbstractInterface *itf)
+{
+    // Le informazioni per il singolo tag, per il driver atena sono:
+    // 1. can
+    // 2. numero
+    // 3. tipo
+    if(itf != NULL) {
+        if(itf->getFather() != NULL)
+        {
+            QString key;
+            QString data;
+
+            key = "par1";
+            data.sprintf("%03X",itf->getFather()->getAdress().can);
+            tag->AddDriverParameter(key, data);
+
+            key = "par2";
+            data.sprintf("%03d",itf->getNumero());
+            tag->AddDriverParameter(key, data);
+
+            key = "type";
+            data.sprintf("%03d",itf->getType());
+            tag->AddDriverParameter(key, data);
+        }
+
+    }
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::CreateTagDriverParameters
+ * @param tag
+ * @param itf
+ * @return
+ */
+QMap<QString, QString> AtnHbaFieldDriver_Atena::CreateTagDriverParameters(AbstractInterface *itf)
+{
+    QMap<QString, QString> ret;
+
+    // Le informazioni per il singolo tag, per il driver atena sono:
+    // 1. can
+    // 2. numero
+    // 3. tipo
+    if(itf != NULL) {
+        if(itf->getFather() != NULL)
+        {
+            QString data;
+
+            // TODO Rifinire con i bomi corretti
+            data.sprintf("%03X",itf->getFather()->getAdress().can);
+            ret.insert("par1", data);
+
+            data.sprintf("%03d",itf->getNumero());
+            ret.insert("par2", data);
+
+            data.sprintf("%03d",itf->getType());
+            ret.insert("type", data);
+
+            ret.insert("description", itf->getName());
+        }
     }
 
-    explicit Mod_FieldMap();
+    return ret;
+}
 
-    QJsonArray GetUiPoints();
-    QJsonArray GetTagListJson();                                       // Recupero lista tag con json
-    QJsonArray GetModuleAndSlotListJson();                             // Recupero lista moduli e relaitivi slot con json
-    QMap<QString, Tag * > * getTags() { return &m_TagsField;}
-    QMap<int, AbstractPdsx *> *getListPdsx();
+/**
+ * @brief AtnHbaFieldDriver_Atena::CreateTags
+ *
+ *
+ *
+ * @param pdsx
+ */
+void AtnHbaFieldDriver_Atena::CreateTags(AbstractPdsx* pdsx)
+{
+    QString key = "";
 
-    Tag * SearchTag(QString key);
-    float getTagValue(QString key);
+    // Scorre tutte le interfacce --> INPUT
+    QList<AbstractInterface *> listInput = pdsx->getInputList();
+    QList<AbstractInterface *>::const_iterator iInp;
+    iInp = listInput.constBegin();
+    while(iInp != listInput.constEnd())
+    {
+        en_Hw_Modes_t tagmode;
+        en_Hw_Tag_Types tagtype;
 
-    void Load();
-    void Unload();
-    void Save();
+        if((*iInp)->isDigital())
+        {
+            tagmode = MODE_DIGITAL;
+            tagtype = INPUT_TYPE_DGT_GENERIC_INPUT_NC;
+        }
+        else
+        {
+            tagmode = MODE_ANALOG;
+            tagtype = INPUT_TYPE_ANL_GENERIC;
+        }
 
-    /*
-     * Setter/Getter AutoCreateMap
-     */
-    bool getAutoCreateMap();
-    void setAutoCreateMap(bool value);
+        // Generazione key per identificazione elemento nella lista.
+        // Per ogni tipo di driver deve esserci una identificazione univoca del tag
+        key.clear();
+        key.sprintf("ATN.%03X.I.%03d", pdsx->getAdress().can, (*iInp)->getNumero());
 
-    /*
-     * Override AbstractWorker
-     */
-    bool Start();
-    bool Stop();
+        // Genera un nuovo TAG corrispondente alla interfaccia in questione
+        emit sgnlNewTag(key, tagmode, tagtype, CreateTagDriverParameters(*iInp), (*iInp), DIR_INPUT, en_Hw_Drivers_names[DRIVER_ATENA]);
+        // Modificata QMap<QString, QString>
+
+        iInp++;
+    }
+
+    // Scorre tutte le interfacce --> OUTPUT
+    QList<AbstractInterface *> listOutput = pdsx->getOutputList();
+    QList<AbstractInterface *>::const_iterator iOut;
+    iOut = listOutput .constBegin();
+    while(iOut != listOutput.constEnd())
+    {
+        en_Hw_Modes_t tagmode;
+        en_Hw_Tag_Types tagtype;
+
+        if((*iOut)->isDigital())
+        {
+            tagmode = MODE_DIGITAL;
+            tagtype = OUTPUT_TYPE_DGT_GENERIC_NO;
+        }
+        else
+        {
+            tagmode = MODE_ANALOG;
+            tagtype = OUTPUT_TYPE_ANL_GENERIC;
+        }
+
+        // Generazione key per identificazione elemento nella lista
+        // Per ogni tipo di driver deve esserci una identificazione univoca del tag
+        key.clear();
+        key.sprintf("ATN.%03X.O.%03d", pdsx->getAdress().can, (*iOut)->getNumero());
+
+        emit sgnlNewTag(key, tagmode, tagtype, CreateTagDriverParameters(*iOut), (*iOut), DIR_OUTPUT, en_Hw_Drivers_names[DRIVER_ATENA]);
+
+        iOut++;
+    }
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::CreateFieldMap
+ *
+ *      Creazione della mappa di campo percorrendo gli oggetti di sistema
+ *
+ */
+void AtnHbaFieldDriver_Atena::CreateFieldMap()
+{
+    int k = 0;
+
+    QMap<int, AbstractPdsx*> * mappa = &m_ListPdsX;
+    QMap<int, AbstractPdsx*>::const_iterator iPds;
+
+    // Cerca la riga giusta dell'input
+    iPds = mappa->constBegin();
+    while (iPds != mappa->constEnd())
+    {
+        CreateTags((*iPds));
+
+        k++;        // Semplice conteggio per controllare il numero di moduli
+
+        iPds++;     // Incremento
+    }
+
+    qDebug() << "MODULI:" << k;
+}
 
 
-    QList<GuiState *> * getListInterfaceStates();
-    int getFieldConnectionState();
-
-    QString toString();
 
 
-    void CommandDigitalToggle(QString tag);                                                                                 // Toggle on-->off/off-->on
-    void CommandDigitalOn(QString tag, en_Time_Unit_Types_t unit, int time, int delay);                                     // On con ritardo
-    void CommandDigitalOff(QString tag, en_Time_Unit_Types_t unit, int time, int delay);                                    // Off con ritardo
-    void CommandDigitalPwmOn(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay);       // Pwm on con delay
-    void CommandDigitalPwmOff(QString tag, en_Time_Unit_Types_t unit, int timeon, int timeoff, int repeat, int delay);      // Pwm off con delay
-    void CommandAnalogSet(QString tag, float value);                                                                        // Impostazione valore uscita analogica
-    void CommandAnalogFromTo(QString tag, en_Time_Unit_Types_t unit, int timeon, float valueFrom, float valueTo);           // Impostazione rampa uscita analogica
-    void CommandLive();                                                                                                     // Stato in vita SINERGIBOX
 
-public slots:
-    void slotNewTag(QString key, int mode, int type, QMap<QString, QString> params, AbstractInterface *ifc, int dir, QString driverstr);    // Notifica che deve essere inserita in un nuovo tag (Prevedere di passare tutte le informazioni necessarie a generare un tag
-    void slotTagValueChangedFromField(QString tagId, float value);                      // Notifica che il tag ha cambiato valore. Dall'esterno per modificare il valore nella fieldmap
-    void slotTagValueChanged(Tag *);                                                    // Notifica che il tag ha cambiato valore. Dal singolo Tag. Serve alla fieldmap per mandare la segnalazione in giro.
-    void slotTagStatusChanged(Tag *);                                                   // Notifica che il tag ha cambiato stato. Dal singolo Tag. Serve alla fieldmpa per mandare la segnalazione in giro
-    void slotSaveMap();                                                                 // Salvataggio mappa
-    void slotGestoreOutput(quint16 IdCan, quint8 slot, quint8 numTrigger, quint8 typeTrigger);
+/**
+ * @brief AtnHbaFieldDriver_Atena::findPdsx
+ *        Ricerca il PdsX
+ * @param address
+ * @return
+ */
+AbstractPdsx * AtnHbaFieldDriver_Atena::findPdsx (Address &address)
+{
+    if (((address.can & 0xff) == 0xff) || (address.can == 0))
+        return NULL;
 
-private slots:
-    void slotNewQueueMessage(const QList<QByteArray>& message);
-    void slotTagCommand(TagCommand command);
-    void slotCheckTimer();
+    QMap<int, AbstractPdsx*>::const_iterator i = m_ListPdsX.find(address.can);
+    if (i != m_ListPdsX.constEnd())
+        return (*i);
 
-signals:
-    void sgnlMessageForDriver(QList<QByteArray> &message);
-    void sgnlTagCommand(QByteArray command);
-    void sgnlTagCommand(TagCommand command);
-    //RG 15/09/2017 segnale verso field driver per comandi 'al di fuori' dell'astrazione basata sui tag
-    void sgnlFieldCommand(en_Field_Command_Types_t fieldcommand);
-    void sgnlGestoreOutput(quint16 IdCan, quint8 slot, quint8 numTrigger, quint8 typeTrigger);
+    if (address.tipo == 0)
+        return NULL;
 
-};
+    return addNewPdsx (address);
+}
 
-#endif  // MOD_FIELDMAP_H
+/**
+ * @brief AtnHbaFieldDriver_Atena::NewPdsXCommons
+ *
+ * Procedure comuni alla creazione di un nuodo pdsx
+ *
+ * @param pdsx
+ */
+void AtnHbaFieldDriver_Atena::NewPdsXCommons(AbstractPdsx *pdsx, Address address)
+{
+    if (pdsx)
+    {
+
+        // Inserisce in una lista
+        m_ListPdsX.insert(address.can, pdsx);        
+
+        // SIGNAL/SLOT relativi all'oggetto locale
+        ActivateSignalSlotGeneric(pdsx);
+
+        // Segnalazione di nuovo tag
+        CreateTags(pdsx);
+
+        // emit sgnlNewPdsx (pdsx);
+
+    }
+}
+
+/**
+ * @brief Domotica::findPdsx
+ *        Ricerca il PdsX
+ * @param address
+ * @return
+ */
+AbstractPdsx * AtnHbaFieldDriver_Atena::findPdsx (quint16 can)
+{
+    if (((can & 0xff) == 0xff) || (can == 0))
+        return NULL;
+
+    QMap<int, AbstractPdsx*>::const_iterator i = m_ListPdsX.find(can);
+    if (i != m_ListPdsX.constEnd())
+        return (*i);
+
+    return NULL;
+}
+
+
+/**
+ * @brief Domotica::addNewPdsx
+ *
+ *
+ *
+ */
+AbstractPdsx* AtnHbaFieldDriver_Atena::addNewPdsx(int intType, quint16 intCanAdr, QString strDescription)
+{
+    AbstractPdsx *pdsx;
+
+    Address address;
+    address.tipo = intType;
+    address.can = intCanAdr;
+
+    QDomElement element;
+    pdsx = PdsxFactory::pdsxFactory (address, element, QString::number(intType), this);
+
+    if(pdsx)
+    {
+        // Impostazione parametri di base
+        pdsx->setName(strDescription);
+    }
+
+    NewPdsXCommons(pdsx, address);
+
+    return pdsx;
+}
+
+/**
+ * @brief Domotica::addNewPdsx
+ *
+ * Questa procedura
+ *
+ * @param pdsx
+ * @return
+ */
+AbstractPdsx* AtnHbaFieldDriver_Atena::addNewPdsx(AbstractPdsx *pdsx)
+{
+    Address address = pdsx->getAdress();
+
+    NewPdsXCommons(pdsx, address);
+
+    return pdsx;
+}
+
+
+/**
+ * @brief Domotica::addNewPdsx
+ *        Aggiunge un nuovo pdsX
+ * @param address
+ * @return
+ */
+AbstractPdsx * AtnHbaFieldDriver_Atena::addNewPdsx (Address &address)
+{
+    AbstractPdsx *pdsx;
+
+    QDomElement element;
+    pdsx = PdsxFactory::pdsxFactory (address, element, this);
+
+    NewPdsXCommons(pdsx, address);
+
+    return pdsx;
+}
+
+
+/**
+ * @brief Domotica::ActivateSignalSlotGeneric
+ *
+ *        Activate signal/slot mechanism for generic object
+ *
+ * @param pdsx
+ */
+void AtnHbaFieldDriver_Atena::ActivateSignalSlotGeneric(AbstractPdsx *pdsx)
+{
+  if(pdsx != NULL) {
+      //SGL 20150316
+//    connect (pdsx, SIGNAL(signalChangeNamePdsxCommand(QString&)),this, SLOT(slotChangeNamePdsxCommand(QString&)));
+//    connect (pdsx, SIGNAL(getIdMsgSignal(Address&, int)),this, SLOT(slotSendIdMsg(Address&, int)));
+//    connect (pdsx, SIGNAL(signalFinitoDownloadDescr()),this, SLOT(sendIdMsgTimeout()));
+//    connect (pdsx, SIGNAL(signalChangeTypeCommand(AbstractInterface*,int)),this, SLOT(slotChangeTypeCommand(AbstractInterface*,int)));
+//    connect (pdsx, SIGNAL(signalChangeNameInterfaceCommand(AbstractInterface*,QString&)),this, SLOT(slotChangeNameInterfaceCommand(AbstractInterface*,QString&)));
+//    connect (pdsx, SIGNAL(signalConfigPdsxNameCommand(Address&,QString)), this, SLOT(slotConfigPdsxNameCommand(Address&,QString)));
+//    connect (pdsx, SIGNAL(signalConfigInterfaceCommand(AbstractInterface*)), this, SLOT(slotConfigInterfacciaCommand(AbstractInterface*)));
+//    connect (pdsx, SIGNAL(sgnlChangeConnectionState(AbstractPdsx *)), this, SLOT(slotChangePdsXConnectionState(AbstractPdsx*)));
+
+    // TODO: Attenzione!!! Trovare dove devo propagare il segnale di valore cambiato dall'interfaccia ai moduli superiori
+
+      // Scorre le interfacce di input
+      for(int k = 0; k < pdsx->getInputList().count(); k++)
+      {
+        AbstractInterface * itf = pdsx->getInputList().at(k);
+        connect(itf,SIGNAL(signalChangeFromField(AbstractInterface*)), this,SLOT(slotChangeFromField(AbstractInterface*)));
+      }
+
+      // Scorre le interfacce di output
+      for(int k = 0; k < pdsx->getOutputList().count(); k++)
+      {
+        AbstractInterface * itf = pdsx->getOutputList().at(k);
+        connect(itf,SIGNAL(signalChangeFromField(AbstractInterface*)), this,SLOT(slotChangeFromField(AbstractInterface*)));
+      }
+  }
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::slotTimerTest
+ */
+void AtnHbaFieldDriver_Atena::slotTimerTest()
+{
+
+}
+
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::Action
+ *
+ *
+ *
+ * @param command
+ */
+bool AtnHbaFieldDriver_Atena::Action(QString command)
+{
+    // Analizza la action ricevuta e la inserisce
+
+
+    // Debug. Visualizzazione informazioni.
+
+    return true;
+}
+
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::setCommunicationType
+ *
+ *
+ *
+ * @param commType
+ */
+void AtnHbaFieldDriver_Atena::setCommunicationType(int commType, QString par1, QString par2)
+{
+
+    m_CommType = commType;
+
+#ifdef PLATFORM_DESKTOP
+    // Va in override di qualsiasi impostazione richiesta e fa in modo di non utilizzare il can
+    m_CommType = COMM_TYPE_TCP;
+#endif
+
+
+    // Istanzia l'oggetto di comunicazione
+    switch(m_CommType)
+    {
+        case COMM_TYPE_CAN:
+            m_CommCan = new HwMgr_Can();
+            m_Comm = m_CommCan;
+            qDebug() << "OGGETTO DI COMUNICAZIONE  m_Comm ISTANZIATO COME CAN"  ;
+            break;
+        case COMM_TYPE_TCP:
+            qDebug() << "Ip:" << par1 << " Port:" << par2;
+            m_CommTcp = new HwMgr_Tcp(par1, par2.toInt());
+            m_Comm = m_CommTcp;
+            qDebug() << "OGGETTO DI COMUNICAZIONE  m_Comm ISTANZIATO COME TCP"  ;
+            break;
+        case COMM_TYPE_SPICAN:
+            qDebug() << "SpiDevice: " << par1;
+            m_CommSpi = new HwMgr_Spi(par1);
+            m_Comm = m_CommSpi;
+            connect (m_Comm, SIGNAL(sgnlRxSerialnumber(QString)), m_CanSoftLux, SLOT(slotReceiveSn(QString)));
+            qDebug() << "OGGETTO DI COMUNICAZIONE  m_Comm ISTANZIATO COME SPI"  ;
+    }
+
+
+
+    // Collegamento
+    LinkModules();
+}
+
+QMap<int, AbstractPdsx *> *AtnHbaFieldDriver_Atena::getListPdsx()
+{
+    return &m_ListPdsX;
+}
+
+
+/**
+ * @brief Mod_FldDrvSimulator::slotMessageForDriver
+ *
+ * Ricevuto segnale dalla fieldmap. Necessita qualche tipo di azione
+ *
+ * @param message
+ */
+void AtnHbaFieldDriver_Atena::slotMessageForDriver(QList<QByteArray> &message)
+{
+   // TODO Costruzione comando
+    if(message.at(0) == "driver.atn")       // Primo filtro. Controlla che il comando sia diretto al driver in questione
+    {
+        qDebug() << "AtnHbaFieldDriver_Atena::slotMessageForDriver. " << message;
+
+        Address addr;
+        bool ok;
+
+        // Recupero indirizzo modulo
+        QString modAddr = "203";
+        addr.can = (quint16) modAddr.toULong(&ok,16);
+
+        // Numero di interfaccia
+        int itf = 0;
+        addr.numero = 1 << itf;
+
+
+//        CMD_POSITION_COMMAND = 3,
+//        CMD_POSITION_PAR1 = 4,
+//        CMD_POSITION_PAR2 = 5,
+//        CMD_POSITION_PAR3 = 6,
+//        CMD_POSITION_PAR4 = 7,
+
+        if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_DGT_TOGGLE])
+        {
+            DigitalToggleMessageEvent event;
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_DGT_ON])
+        {
+            int parUnit = message.at(CMD_POSITION_PAR1).toInt();
+            int parTime = message.at(CMD_POSITION_PAR2).toInt();
+            int parDelay = message.at(CMD_POSITION_PAR3).toInt();
+
+            if(parTime == 0)
+            {
+                DigitalOnMessageEvent event(parDelay);
+                event.setTimeUnit(parUnit);
+                emit sgnlSendDigitalOutput (addr, event);
+            }
+            else
+            {
+                DigitalTemporizzataOnMessageEvent event(parTime, parDelay);
+                event.setTimeUnit(parUnit);
+                emit sgnlSendDigitalOutput (addr, event);
+            }
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_DGT_OFF])
+        {
+            int parUnit = message.at(CMD_POSITION_PAR1).toInt();
+            int parTime = message.at(CMD_POSITION_PAR2).toInt();
+            int parDelay = message.at(CMD_POSITION_PAR3).toInt();
+
+            if(parTime == 0)
+            {
+                DigitalOffMessageEvent event(parDelay);
+                event.setTimeUnit(parUnit);
+                emit sgnlSendDigitalOutput (addr, event);
+            }
+            else
+            {
+                DigitalTemporizzataOffMessageEvent event(parTime, parDelay);
+                event.setTimeUnit(parUnit);
+                emit sgnlSendDigitalOutput (addr, event);
+            }
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_DGT_PWM_ON])
+        {
+            int parUnit = message.at(CMD_POSITION_PAR1).toInt();
+            int parLavoro = message.at(CMD_POSITION_PAR2).toInt();
+            int parPausa = message.at(CMD_POSITION_PAR3).toInt();
+            int parNumero = message.at(CMD_POSITION_PAR4).toInt();
+            int parDelay = message.at(CMD_POSITION_PAR5).toInt();
+            DigitalTemporizzataPausaLavoroOnMessageEvent event(parLavoro, parPausa, parNumero, parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_DGT_PWM_OFF])
+        {
+            int parUnit = message.at(CMD_POSITION_PAR1).toInt();
+            int parLavoro = message.at(CMD_POSITION_PAR2).toInt();
+            int parPausa = message.at(CMD_POSITION_PAR3).toInt();
+            int parNumero = message.at(CMD_POSITION_PAR4).toInt();
+            int parDelay = message.at(CMD_POSITION_PAR5).toInt();
+            DigitalTemporizzataPausaLavoroOffMessageEvent event(parLavoro, parPausa, parNumero, parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_ANL_SET_ANALOG])
+        {
+            // TODO Comando impostazione valore analogico
+        }
+        else if(message.at(CMD_POSITION_COMMAND) == en_Tag_Command_Types_Names[TAG_COMMAND_ANL_SET_ANALOG_FROM_TO])
+        {
+            // TODO Comando impostazione valore analogico from/to
+        }
+    }
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::slotTagCommand
+ *
+ *
+ *
+ * @param command
+ */
+void AtnHbaFieldDriver_Atena::slotTagCommand(QByteArray command)
+{
+    // Deserializza il comando
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::slotTagCommand
+ *
+ *
+ *
+ * @param command
+ */
+void AtnHbaFieldDriver_Atena::slotTagCommand(TagCommand command)
+{
+    qDebug() << "AtnHbaFieldDriver_Atena::slotTagCommand";
+
+    Address addr;
+    bool ok;
+
+    QStringList tagId = command.getTagId().split(".");
+    if(tagId.count() != 4)
+        return;
+
+        // Recupero indirizzo modulo
+    addr.can = (quint16) tagId.at(1).toULong(&ok,16);
+
+    // Numero di interfaccia
+    int itf = tagId.at(3).toInt(&ok);
+    addr.numero = 1 << itf;
+
+    if(command.getCommandType() == TAG_COMMAND_DGT_TOGGLE)
+    {
+            DigitalToggleMessageEvent event;
+            emit sgnlSendDigitalOutput (addr, event);
+    }
+    else if(command.getCommandType() == TAG_COMMAND_DGT_ON)
+    {
+        int parUnit = command.getUnit();
+        int parTime = command.getTimeWork();
+        int parDelay = command.getDelay();
+
+        if(parTime == 0)
+        {
+            DigitalOnMessageEvent event(parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+        else
+        {
+            DigitalTemporizzataOnMessageEvent event(parTime, parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+    }
+    else if(command.getCommandType() == TAG_COMMAND_DGT_OFF)
+    {
+        int parUnit = command.getUnit();
+        int parTime = command.getTimeWork();
+        int parDelay = command.getDelay();
+
+        if(parTime == 0)
+        {
+            DigitalOffMessageEvent event(parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+        else
+        {
+            DigitalTemporizzataOffMessageEvent event(parTime, parDelay);
+            event.setTimeUnit(parUnit);
+            emit sgnlSendDigitalOutput (addr, event);
+        }
+    }
+    else if(command.getCommandType() == TAG_COMMAND_DGT_PWM_ON)
+    {
+        int parUnit = command.getUnit();
+        int parLavoro = command.getTimeWork();
+        int parPausa = command.getTimeOff();
+        int parNumero = command.getRepeat();
+        int parDelay = command.getDelay();
+        DigitalTemporizzataPausaLavoroOnMessageEvent event(parLavoro, parPausa, parNumero, parDelay);
+        event.setTimeUnit(parUnit);
+        emit sgnlSendDigitalOutput (addr, event);
+    }
+    else if(command.getCommandType() == TAG_COMMAND_DGT_PWM_OFF)
+    {
+        int parUnit = command.getUnit();
+        int parLavoro = command.getTimeWork();
+        int parPausa = command.getTimeOff();
+        int parNumero = command.getRepeat();
+        int parDelay = command.getDelay();
+        DigitalTemporizzataPausaLavoroOffMessageEvent event(parLavoro, parPausa, parNumero, parDelay);
+        event.setTimeUnit(parUnit);
+        emit sgnlSendDigitalOutput (addr, event);
+    }
+    else if(command.getCommandType() == TAG_COMMAND_ANL_SET_ANALOG)
+    {
+        //msg = TagCommandsQueue::NewCommandAnalogSet(command.getTagId(), 1);
+    }
+    else if(command.getCommandType() == TAG_COMMAND_ANL_SET_ANALOG_FROM_TO)
+    {
+        //msg = TagCommandsQueue::NewCommandAnalogFromTo(command.getTagId(), 1, 2);
+    }
+
+}
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::CheckFolders
+ *
+ *
+ *
+ */
+void AtnHbaFieldDriver_Atena::CheckFolders()
+{
+
+}
+
+
+/**
+ * @brief AtnHbaFieldDriver_Atena::LoadConfiguration
+ *
+ *
+ *
+ * @param objCfg
+ * @return
+ */
+bool AtnHbaFieldDriver_Atena::LoadConfiguration(QJsonObject objCfg)
+{
+    return true;
+}
